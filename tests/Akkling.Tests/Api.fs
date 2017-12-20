@@ -14,6 +14,8 @@ open System
 open Xunit
 open Akka.Routing
 open Akka.Routing
+open Akka.Actor.Internal
+open System.Security.Policy
 
 [<Fact>]
 let ``configuration loader should load data from app.config``() = 
@@ -204,3 +206,46 @@ let ``custom supervisor strategy works with routers`` () = testDefault <| fun tc
     
     expectMsg tck <| DirectiveInvoked |> ignore
     expectMsg tck <| State 3 |> ignore
+
+type SupervisorTestMsg =
+    | ParentBorn
+    | ChildBorn
+    | DirectiveInvoked
+
+[<Fact(Skip="FIXME")>]
+let ``custom supervisor strategy is called`` () = testDefault <| fun tck ->
+    let t = typed tck.TestActor
+    let strategy = Strategy.OneForOne(fun ex -> 
+        t <! DirectiveInvoked
+        Directive.Escalate)
+    
+    let rec child (m:Actor<string>) =
+        t <! ChildBorn
+        let rec loop () = actor {
+            let! msg = m.Receive()
+            match msg with
+            | "boom" -> failwith "Expected"
+            | _ -> return! loop()
+        }
+        loop ()
+    
+    let rec parent (m:Actor<string>) =
+        t <! ParentBorn
+        let child = spawn tck "child" { props child with SupervisionStrategy = Some strategy }
+        let rec loop () = actor {
+            let! msg = m.Receive()
+            child <! msg
+            return! loop()
+        }
+        loop ()
+    
+    let parentRef = spawn tck "parent" <| props parent
+    
+    parentRef <! "something"
+    parentRef <! "boom"
+
+    expectMsg tck <| ParentBorn |> ignore
+    expectMsg tck <| ChildBorn |> ignore
+    expectMsg tck <| DirectiveInvoked |> ignore
+    expectMsg tck <| ParentBorn |> ignore
+    expectMsg tck <| ChildBorn |> ignore
